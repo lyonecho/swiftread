@@ -160,6 +160,39 @@
   /* the reader display invites a tap (play/pause) and horizontal swipe (jump) on touch */
   #display-wrap { cursor: pointer; touch-action: pan-y; }
 
+  /* ---------- Immersive playback: hide every control while running ---------- */
+  body.immersive.playing { overflow: hidden; }
+  body.immersive.playing header,
+  body.immersive.playing #text-card,
+  body.immersive.playing #library-card,
+  body.immersive.playing #shortcuts,
+  body.immersive.playing #controls,
+  body.immersive.playing #progress,
+  body.immersive.playing #context-hint { display: none; }
+  body.immersive.playing #reader-card {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    border: none;
+    border-radius: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+  body.immersive.playing #display-wrap { flex: 1; height: auto; }
+  body.immersive.playing #display-wrap::before { top: 16vh; height: 30px; }
+  body.immersive.playing #display-wrap::after { bottom: 16vh; height: 30px; }
+
+  /* fullscreen views (focus or immersive) clear the notch/home-bar in any orientation */
+  body.focus-mode #reader-card,
+  body.immersive.playing #reader-card {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+  #btn-immersive.on { border-color: var(--accent); color: var(--accent-soft); }
+
   /* ---------- Progress ---------- */
   #progress {
     width: 100%;
@@ -356,6 +389,7 @@
         <input type="range" id="wpm" min="100" max="1000" step="25" value="300">
         <span id="wpm-value">300 wpm</span>
       </div>
+      <button id="btn-immersive" title="Hide controls while playing (H)">Hide UI</button>
       <button id="btn-focus" title="Focus mode (F)">⛶</button>
     </div>
   </div>
@@ -380,7 +414,7 @@
 
   <div id="shortcuts">
     <kbd>Space</kbd> play / pause &nbsp; <kbd>←</kbd><kbd>→</kbd> jump sentence &nbsp;
-    <kbd>↑</kbd><kbd>↓</kbd> speed ±25 &nbsp; <kbd>C</kbd> context &nbsp; <kbd>F</kbd> focus mode &nbsp; <kbd>R</kbd> restart
+    <kbd>↑</kbd><kbd>↓</kbd> speed ±25 &nbsp; <kbd>C</kbd> context &nbsp; <kbd>H</kbd> hide UI &nbsp; <kbd>F</kbd> focus mode &nbsp; <kbd>R</kbd> restart
   </div>
 </main>
 
@@ -414,6 +448,7 @@ Most people read around two hundred and fifty words per minute. With a little pr
   let book = null;          // active record: {id, title, text, idx, words, addedAt, lastReadAt}
   let focusMode = false;
   let contextMode = true;   // show dimmed neighboring words around the pivot word
+  let immersive = true;     // hide all controls while playing for a clean reading view
   const CTX_WORDS = 12;     // rendered each side; the edge mask hides the overflow
   let scrubbing = false;    // user is dragging the progress slider
   let scrubResume = false;  // playback was live when the scrub began
@@ -433,6 +468,7 @@ Most people read around two hundred and fifty words per minute. With a little pr
   const textInput = $('text-input'), contextHint = $('context-hint');
   const bookTitle = $('book-title'), dropOverlay = $('drop-overlay');
   const btnFocus = $('btn-focus');
+  const btnImmersive = $('btn-immersive');
 
   // ----- persistence (IndexedDB for books, localStorage for tiny position map) -----
   const DB_NAME = 'swiftread', STORE = 'books';
@@ -832,9 +868,12 @@ Most people read around two hundred and fifty words per minute. With a little pr
     updateStats();
   }
 
-  // in focus mode, size each word as large as fits its longer half around the pivot
+  // a fullscreen view (focus mode, or immersive while playing) gets big type
+  function bigView() { return focusMode || (immersive && playing); }
+
+  // in a fullscreen view, size each word as large as fits its longer half around the pivot
   function applyWordScale(orp, len) {
-    if (!focusMode) { wordLine.style.fontSize = ''; return; }
+    if (!bigView()) { wordLine.style.fontSize = ''; return; }
     if (contextMode) {
       // a whole line is visible — scale with the window instead of the word
       wordLine.style.fontSize = Math.round(Math.min(110, Math.max(32, window.innerWidth * 0.05))) + 'px';
@@ -895,6 +934,7 @@ Most people read around two hundred and fifty words per minute. With a little pr
     if (!tokens.length || playing) return;
     if (finished || idx >= tokens.length) { idx = 0; finished = false; }
     playing = true;
+    document.body.classList.add('playing'); // immersive CSS hides chrome while this is set
     btnPlay.textContent = 'Pause';
     contextHint.textContent = '';
     tick();
@@ -903,7 +943,10 @@ Most people read around two hundred and fifty words per minute. With a little pr
   function pause() {
     playing = false;
     clearTimeout(timer);
+    document.body.classList.remove('playing');
     btnPlay.textContent = 'Play';
+    // re-render so the word returns to its inline size once the big view collapses
+    if (tokens.length && !wordLine.classList.contains('idle')) renderWord();
     if (tokens.length) showContext();
     savePosition(true);
   }
@@ -950,6 +993,16 @@ Most people read around two hundred and fifty words per minute. With a little pr
   }
   $('btn-context').addEventListener('click', () => setContextMode(!contextMode));
 
+  // ----- immersive mode: hide all controls while playing -----
+  function setImmersive(on) {
+    immersive = on;
+    document.body.classList.toggle('immersive', on);
+    btnImmersive.classList.toggle('on', on);
+    try { localStorage.setItem('swiftread:immersive', on ? '1' : '0'); } catch {}
+    if (tokens.length && !wordLine.classList.contains('idle')) renderWord();
+  }
+  btnImmersive.addEventListener('click', () => setImmersive(!immersive));
+
   // ----- focus mode -----
   function setFocusMode(on) {
     focusMode = on;
@@ -968,8 +1021,12 @@ Most people read around two hundred and fifty words per minute. With a little pr
     // browser fullscreen exited (e.g. via Esc) — drop focus mode too
     if (!document.fullscreenElement && focusMode) setFocusMode(false);
   });
+  // rescale the word when the window changes size or the phone rotates
   window.addEventListener('resize', () => {
-    if (focusMode && tokens.length && !wordLine.classList.contains('idle')) renderWord();
+    if (bigView() && tokens.length && !wordLine.classList.contains('idle')) renderWord();
+  });
+  window.addEventListener('orientationchange', () => {
+    if (bigView() && tokens.length && !wordLine.classList.contains('idle')) setTimeout(renderWord, 50);
   });
 
   // ----- wiring -----
@@ -1125,6 +1182,7 @@ Most people read around two hundred and fifty words per minute. With a little pr
       case 'ArrowUp': e.preventDefault(); setWpm(wpm + 25); break;
       case 'ArrowDown': e.preventDefault(); setWpm(wpm - 25); break;
       case 'KeyC': setContextMode(!contextMode); break;
+      case 'KeyH': setImmersive(!immersive); break;
       case 'KeyF': setFocusMode(!focusMode); break;
       case 'Escape': if (focusMode) setFocusMode(false); break;
       case 'KeyR': if (tokens.length) { pause(); seek(0); } break;
@@ -1152,6 +1210,10 @@ Most people read around two hundred and fifty words per minute. With a little pr
       const savedCtx = localStorage.getItem('swiftread:context');
       setContextMode(savedCtx === null ? true : savedCtx === '1');
     } catch { setContextMode(true); }
+    try {
+      const savedImm = localStorage.getItem('swiftread:immersive');
+      setImmersive(savedImm === null ? true : savedImm === '1');
+    } catch { setImmersive(true); }
     const gen = newLoad(); // any user action during startup supersedes the auto-restore
     try { libMeta = await dbAllMeta(); } catch { libMeta = []; }
     renderLibrary();
@@ -1165,10 +1227,10 @@ Most people read around two hundred and fifty words per minute. With a little pr
   // small console/test API
   window.swiftread = {
     get state() {
-      return { idx, wpm, playing, finished, focusMode, contextMode, words: tokens.length, bookId: book && book.id, title: book && book.title };
+      return { idx, wpm, playing, finished, focusMode, contextMode, immersive, words: tokens.length, bookId: book && book.id, title: book && book.title };
     },
     addOrResumeText, ingestFile, extractPdf, extractDocx,
-    seek, play, pause, savePosition, setFocusMode, setContextMode,
+    seek, play, pause, savePosition, setFocusMode, setContextMode, setImmersive,
     db: { get: dbGet, allMeta: dbAllMeta, delete: dbDelete },
   };
 

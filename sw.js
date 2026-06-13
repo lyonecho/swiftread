@@ -1,6 +1,6 @@
 /* Swiftread service worker — offline app shell.
    Bump VERSION on every deploy that changes index.html, sw.js, or the vendored libs. */
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = 'swiftread-' + VERSION;
 
 // Paths are relative to this file, so the same worker runs at "/" (local) and
