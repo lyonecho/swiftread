@@ -147,6 +147,7 @@
     display: flex;
     flex-direction: column;
   }
+  body.focus-mode #reader-card { padding-top: env(safe-area-inset-top); }
   body.focus-mode #display-wrap { flex: 1; height: auto; }
   body.focus-mode #display-wrap::before { top: 16vh; height: 30px; }
   body.focus-mode #display-wrap::after { bottom: 16vh; height: 30px; }
@@ -981,19 +982,28 @@ Most people read around two hundred and fifty words per minute. With a little pr
   const displayWrap = $('display-wrap');
   let ptId = null, ptX = 0, ptY = 0, ptT = 0;
   displayWrap.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || !e.isPrimary) return;  // ignore right/middle click & extra fingers
     ptId = e.pointerId; ptX = e.clientX; ptY = e.clientY; ptT = Date.now();
+    // capture mouse so a release outside the reader still ends the gesture cleanly;
+    // touch is left uncaptured so vertical page scroll keeps working
+    if (e.pointerType === 'mouse') { try { displayWrap.setPointerCapture(e.pointerId); } catch {} }
   });
   displayWrap.addEventListener('pointerup', e => {
-    if (e.pointerId !== ptId || !tokens.length) { ptId = null; return; }
+    if (e.pointerId !== ptId) return;
     ptId = null;
+    try { displayWrap.releasePointerCapture(e.pointerId); } catch {}
+    if (!tokens.length) return;
     const dx = e.clientX - ptX, dy = e.clientY - ptY, dt = Date.now() - ptT;
     if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-      jumpSentence(dx < 0 ? 1 : -1);          // swipe left → forward, right → back
-    } else if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && dt < 500) {
-      playing ? pause() : play();              // tap → toggle
+      jumpSentence(dx < 0 ? 1 : -1);             // clear horizontal swipe → jump a sentence
+    } else if (dt < 700 && Math.abs(dx) < 45 && Math.abs(dy) < 45) {
+      playing ? pause() : play();                 // anything else short & small → tap to toggle
     }
   });
-  displayWrap.addEventListener('pointercancel', () => { ptId = null; });
+  displayWrap.addEventListener('pointercancel', e => {
+    ptId = null;
+    try { displayWrap.releasePointerCapture(e.pointerId); } catch {}
+  });
 
   // scrub: pause once at drag start, follow the thumb, resume only on release
   progress.addEventListener('input', () => {
