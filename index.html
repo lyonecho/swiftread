@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Swiftread — Speed Reader</title>
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<!-- iOS standalone (Add to Home Screen) -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Swiftread">
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/mammoth.browser.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface: #181b22;
+    --surface-2: #1f232c;
+    --border: #2a2f3a;
+    --text: #e8eaf0;
+    --text-dim: #8b92a3;
+    --accent: #e5484d;
+    --accent-soft: #ff6b6f;
+    --green: #46a758;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+             calc(48px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  }
+  header {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+  h1 .dot { color: var(--accent); }
+  #book-title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+  }
+  #stats { font-size: 13px; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  main { width: 100%; max-width: 720px; }
+
+  /* ---------- Reader ---------- */
+  #reader-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  #display-wrap {
+    position: relative;
+    height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+  }
+  /* guide ticks above and below the focal point */
+  #display-wrap::before, #display-wrap::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    width: 2px;
+    height: 18px;
+    background: var(--border);
+    transform: translateX(-1px);
+  }
+  #display-wrap::before { top: 22px; }
+  #display-wrap::after { bottom: 22px; }
+
+  #word-line {
+    position: absolute;
+    left: 50%;
+    white-space: pre;
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    font-size: 44px;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+  #word-line .focus { color: var(--accent-soft); }
+  #word-line .ctx { color: var(--text-dim); opacity: 0.55; }
+
+  /* context mode: neighboring words shown, fading out toward the edges */
+  body.context-mode #word-line { font-size: 30px; }
+  body.context-mode #display-wrap {
+    -webkit-mask-image: linear-gradient(90deg, transparent 1%, #000 30%, #000 70%, transparent 99%);
+    mask-image: linear-gradient(90deg, transparent 1%, #000 30%, #000 70%, transparent 99%);
+  }
+  body.context-mode #context-hint { display: none; }
+  #btn-context.on { border-color: var(--accent); color: var(--accent-soft); }
+
+  #word-line.idle {
+    color: var(--text-dim);
+    font-size: 18px;
+    transform: translateX(-50%);
+    font-family: inherit;
+    white-space: normal;
+    text-align: center;
+    width: 90%;
+  }
+
+  #context-hint {
+    position: absolute;
+    bottom: 4px;
+    width: 100%;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-dim);
+    opacity: 0.7;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0 16px;
+  }
+
+  /* ---------- Focus mode ---------- */
+  body.focus-mode { overflow: hidden; }
+  body.focus-mode #reader-card {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    border: none;
+    border-radius: 0;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+  body.focus-mode #display-wrap { flex: 1; height: auto; }
+  body.focus-mode #display-wrap::before { top: 16vh; height: 30px; }
+  body.focus-mode #display-wrap::after { bottom: 16vh; height: 30px; }
+  body.focus-mode #word-line.idle { font-size: 26px; }
+  body.focus-mode #context-hint { font-size: 16px; bottom: 14px; }
+  body.focus-mode #controls {
+    background: var(--surface);
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  /* the reader display invites a tap (play/pause) and horizontal swipe (jump) on touch */
+  #display-wrap { cursor: pointer; touch-action: pan-y; }
+
+  /* ---------- Progress ---------- */
+  #progress {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: var(--surface-2);
+    cursor: pointer;
+    display: block;
+  }
+  #progress::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: grab;
+  }
+  #progress::-moz-range-thumb {
+    width: 14px; height: 14px; border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: grab;
+  }
+
+  /* ---------- Controls ---------- */
+  #controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: #262b36; border-color: #3a4150; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    min-width: 96px;
+  }
+  button.primary:hover { background: #d63f44; }
+
+  #wpm-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+  }
+  #wpm-group label { font-size: 13px; color: var(--text-dim); }
+  #wpm-value {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 14px;
+    min-width: 64px;
+    text-align: right;
+  }
+  input[type="range"]#wpm {
+    width: 140px;
+    accent-color: var(--accent);
+  }
+
+  /* ---------- Text input ---------- */
+  #text-card, #library-card {
+    margin-top: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+  }
+  #text-card h2, #library-card h2 {
+    font-size: 13px; font-weight: 600; margin-bottom: 12px;
+    color: var(--text-dim); letter-spacing: 0.06em;
+  }
+  textarea {
+    width: 100%;
+    min-height: 130px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    font-family: inherit;
+    resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  #text-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  #drop-tip { margin-top: 12px; font-size: 12px; color: var(--text-dim); }
+
+  /* ---------- Library ---------- */
+  #library-list { list-style: none; }
+  #library-list li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  #library-list li:hover { background: var(--surface-2); }
+  #library-list li.active { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent); }
+  .lib-main { flex: 1; min-width: 0; }
+  .lib-title {
+    font-size: 14px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .lib-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .lib-bar {
+    width: 90px; height: 4px; border-radius: 2px;
+    background: var(--bg); overflow: hidden; flex-shrink: 0;
+  }
+  .lib-bar > div { height: 100%; background: var(--green); }
+  .lib-del {
+    padding: 6px 10px; font-size: 12px;
+    background: transparent; border-color: transparent; color: var(--text-dim);
+  }
+  .lib-del:hover { color: var(--accent-soft); background: var(--surface-2); border-color: var(--border); }
+
+  /* ---------- Drop overlay ---------- */
+  #drop-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 17, 21, 0.85);
+    z-index: 50;
+    pointer-events: none;
+  }
+  #drop-overlay.show { display: flex; }
+  #drop-overlay .box {
+    border: 2px dashed var(--accent);
+    border-radius: 20px;
+    padding: 48px 64px;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface);
+  }
+
+  #shortcuts {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+    line-height: 1.8;
+  }
+  kbd {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Swiftread<span class="dot">.</span></h1>
+  <div id="book-title"></div>
+  <div id="stats">no text loaded</div>
+</header>
+
+<main>
+  <div id="reader-card">
+    <div id="display-wrap">
+      <div id="word-line" class="idle">Drop a PDF, Word, or text file anywhere — or load text below</div>
+      <div id="context-hint"></div>
+    </div>
+    <input type="range" id="progress" min="0" max="0" value="0" step="1" aria-label="Reading position" disabled>
+    <div id="controls">
+      <button id="btn-restart" title="Restart (R)" disabled>⟲</button>
+      <button id="btn-back" title="Previous sentence (←)" disabled>⏮ Sent</button>
+      <button id="btn-play" class="primary" disabled>Play</button>
+      <button id="btn-fwd" title="Next sentence (→)" disabled>Sent ⏭</button>
+      <button id="btn-context" title="Show surrounding words (C)">≡ Context</button>
+      <div id="wpm-group">
+        <label for="wpm">Speed</label>
+        <input type="range" id="wpm" min="100" max="1000" step="25" value="300">
+        <span id="wpm-value">300 wpm</span>
+      </div>
+      <button id="btn-focus" title="Focus mode (F)">⛶</button>
+    </div>
+  </div>
+
+  <div id="text-card">
+    <h2>ADD A BOOK OR TEXT</h2>
+    <textarea id="text-input" placeholder="Paste anything here — an article, a chapter, an email backlog…"></textarea>
+    <div id="text-actions">
+      <button id="btn-load" class="primary">Load text</button>
+      <button id="btn-paste">Paste from clipboard</button>
+      <button id="btn-file">Choose file…</button>
+      <button id="btn-sample">Try sample</button>
+      <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md,application/pdf,text/plain" hidden>
+    </div>
+    <div id="drop-tip">Tip: drag &amp; drop a <b>.pdf</b>, <b>.docx</b>, <b>.txt</b>, or <b>.md</b> file anywhere on this page. Your place in each book is saved automatically.</div>
+  </div>
+
+  <div id="library-card" style="display:none">
+    <h2>LIBRARY</h2>
+    <ul id="library-list"></ul>
+  </div>
+
+  <div id="shortcuts">
+    <kbd>Space</kbd> play / pause &nbsp; <kbd>←</kbd><kbd>→</kbd> jump sentence &nbsp;
+    <kbd>↑</kbd><kbd>↓</kbd> speed ±25 &nbsp; <kbd>C</kbd> context &nbsp; <kbd>F</kbd> focus mode &nbsp; <kbd>R</kbd> restart
+  </div>
+</main>
+
+<div id="drop-overlay"><div class="box">Drop to start reading</div></div>
+
+<script>
+(() => {
+  const SAMPLE = `You are reading this one word at a time, and yet it feels surprisingly natural. This technique is called Rapid Serial Visual Presentation, or RSVP for short.
+
+When you read normally, your eyes do not glide smoothly across the page. They jump in small hops called saccades, pausing briefly on each landing to take in a few words. Those jumps, and the occasional backtracking they cause, consume a large share of your reading time.
+
+RSVP removes the jumps entirely. The words come to you instead, appearing at a single fixed point, so your eyes never need to move. The red letter marks the optimal recognition point of each word: the spot your eye would naturally land on. Keeping it anchored in one place lets your brain decode each word a beat faster.
+
+Most people read around two hundred and fifty words per minute. With a little practice here, four hundred feels comfortable, and six hundred is within reach for lighter material. Try nudging the speed up with the arrow keys. When the words start to blur past without meaning, ease back down a notch. That edge, just below the blur, is where the practice pays off.`;
+
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+  }
+
+  // ----- state -----
+  let tokens = [];          // { w, paraEnd }
+  let weights = [];         // per-token delay multiplier
+  let cumWeight = [];       // cumulative weights for time-remaining
+  let totalWeight = 0;
+  let sentenceStarts = [];  // sorted token indices that begin sentences
+  let idx = 0;
+  let playing = false;
+  let finished = false;     // reached the end; next play restarts from the top
+  let timer = null;
+  let wpm = 300;
+  let book = null;          // active record: {id, title, text, idx, words, addedAt, lastReadAt}
+  let focusMode = false;
+  let contextMode = true;   // show dimmed neighboring words around the pivot word
+  const CTX_WORDS = 12;     // rendered each side; the edge mask hides the overflow
+  let scrubbing = false;    // user is dragging the progress slider
+  let scrubResume = false;  // playback was live when the scrub began
+
+  // any new load action (paste, drop, file, library click, startup restore) bumps this;
+  // slower async loads check it and bail instead of yanking the reader away
+  let loadGen = 0;
+  const newLoad = () => ++loadGen;
+  const loadCurrent = g => g === loadGen;
+
+  // ----- elements -----
+  const $ = id => document.getElementById(id);
+  const wordLine = $('word-line'), stats = $('stats'), progress = $('progress');
+  const btnPlay = $('btn-play'), btnRestart = $('btn-restart');
+  const btnBack = $('btn-back'), btnFwd = $('btn-fwd');
+  const wpmSlider = $('wpm'), wpmValue = $('wpm-value');
+  const textInput = $('text-input'), contextHint = $('context-hint');
+  const bookTitle = $('book-title'), dropOverlay = $('drop-overlay');
+  const btnFocus = $('btn-focus');
+
+  // ----- persistence (IndexedDB for books, localStorage for tiny position map) -----
+  const DB_NAME = 'swiftread', STORE = 'books';
+  let dbPromise = null;
+  function openDb() {
+    if (!dbPromise) {
+      dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' });
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    return dbPromise;
+  }
+  function idbReq(req) {
+    return new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function dbStore(mode) { return (await openDb()).transaction(STORE, mode).objectStore(STORE); }
+  async function dbPut(rec) { return idbReq((await dbStore('readwrite')).put(rec)); }
+  async function dbGet(id) { return idbReq((await dbStore('readonly')).get(id)); }
+  async function dbDelete(id) { return idbReq((await dbStore('readwrite')).delete(id)); }
+  async function dbAllMeta() {
+    const st = await dbStore('readonly');
+    return new Promise((resolve, reject) => {
+      const out = [];
+      const cur = st.openCursor();
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (c) { out.push(metaOf(c.value)); c.continue(); }
+        else resolve(out);
+      };
+      cur.onerror = () => reject(cur.error);
+    });
+  }
+
+  // library metadata cache so rendering never re-reads full book texts from IDB
+  let libMeta = [];
+  function metaOf(rec) {
+    return { id: rec.id, title: rec.title, words: rec.words, idx: rec.idx, addedAt: rec.addedAt, lastReadAt: rec.lastReadAt };
+  }
+  function upsertMeta(rec) {
+    const m = metaOf(rec);
+    const i = libMeta.findIndex(x => x.id === m.id);
+    if (i >= 0) libMeta[i] = m; else libMeta.push(m);
+  }
+
+  // tiny synchronous position map — survives tab kills that abort async IDB writes
+  let posMap = {};
+  try { posMap = JSON.parse(localStorage.getItem('swiftread:pos') || '{}'); } catch {}
+  function writePosMap() { try { localStorage.setItem('swiftread:pos', JSON.stringify(posMap)); } catch {} }
+  function resumeIdxFor(rec) {
+    const e = posMap[rec.id];
+    if (e && (e.t || 0) >= (rec.lastReadAt || 0)) return e.idx || 0;
+    return rec.idx || 0;
+  }
+
+  function fnvHash(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return (h >>> 0).toString(16);
+  }
+  async function bookId(text) {
+    if (crypto.subtle) {
+      try {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return [...new Uint8Array(buf)].slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join('');
+      } catch { /* non-secure context — fall through */ }
+    }
+    return fnvHash(text) + '-' + text.length;
+  }
+
+  let lastDbSaveAt = 0, pendingDbSave = null;
+  function savePosition(force = false) {
+    if (!book) return;
+    const now = Date.now();
+    book.idx = idx;
+    book.lastReadAt = now;
+    posMap[book.id] = { idx, t: now };
+    writePosMap();
+    upsertMeta(book);
+    // the full record (with text) goes to IDB at most every ~3s; a trailing
+    // write always lands so the last throttled position isn't lost
+    if (!force && now - lastDbSaveAt < 3000) {
+      if (!pendingDbSave) {
+        pendingDbSave = setTimeout(() => {
+          pendingDbSave = null;
+          if (book) { lastDbSaveAt = Date.now(); book.idx = idx; dbPut(book).catch(() => {}); }
+        }, 3100 - (now - lastDbSaveAt));
+      }
+      return;
+    }
+    if (pendingDbSave) { clearTimeout(pendingDbSave); pendingDbSave = null; }
+    lastDbSaveAt = now;
+    dbPut(book).catch(() => {});
+    if (force) renderLibrary();
+  }
+
+  // ----- text processing -----
+  function tokenize(text) {
+    const out = [];
+    for (const para of text.split(/\n\s*\n/)) {
+      const words = para.split(/\s+/).filter(Boolean);
+      words.forEach((w, i) => out.push({ w, paraEnd: i === words.length - 1 }));
+    }
+    return out;
+  }
+
+  function weightFor(t) {
+    let m = 1;
+    if (/[.!?…]["”’')\]]*$/.test(t.w)) m = 2.1;
+    else if (/[,;:—–]["”’')\]]*$/.test(t.w)) m = 1.5;
+    if (t.w.length >= 9) m *= 1.25;
+    if (t.paraEnd) m = Math.max(m, 2.6);
+    return m;
+  }
+
+  function isSentenceEnd(t) {
+    return t.paraEnd || /[.!?…]["”’')\]]*$/.test(t.w);
+  }
+
+  function orpIndex(len) {
+    if (len <= 1) return 0;
+    if (len <= 5) return 1;
+    if (len <= 9) return 2;
+    if (len <= 13) return 3;
+    return 4;
+  }
+
+  function loadText(text) {
+    tokens = tokenize(text);
+    if (!tokens.length) return false;
+    weights = tokens.map(weightFor);
+    cumWeight = []; totalWeight = 0;
+    for (const m of weights) { totalWeight += m; cumWeight.push(totalWeight); }
+    sentenceStarts = [0];
+    tokens.forEach((t, i) => {
+      if (isSentenceEnd(t) && i + 1 < tokens.length) sentenceStarts.push(i + 1);
+    });
+    idx = 0;
+    finished = false;
+    pause();
+    progress.max = tokens.length - 1;
+    progress.value = 0;
+    progress.disabled = false;
+    [btnPlay, btnRestart, btnBack, btnFwd].forEach(b => b.disabled = false);
+    renderWord();
+    updateStats();
+    return true;
+  }
+
+  // ----- book management -----
+  function titleFromText(t) {
+    const head = t.trim().split(/\s+/).slice(0, 7).join(' ');
+    return head.length > 48 ? head.slice(0, 48) + '…' : head;
+  }
+
+  async function addOrResumeText(title, text, gen = newLoad()) {
+    const trimmed = (text || '').trim();
+    if (!trimmed) { pause(); showIdle('Nothing to read — paste or drop some text first'); return false; }
+    const id = await bookId(trimmed);
+    let rec = await dbGet(id).catch(() => null);
+    if (!loadCurrent(gen)) return false; // a newer load superseded this one
+    if (!rec) rec = { id, title, text: trimmed, idx: 0, words: 0, addedAt: Date.now(), lastReadAt: Date.now() };
+    activateBook(rec);
+    await dbPut(book).catch(() => {});
+    upsertMeta(book);
+    try { localStorage.setItem('swiftread:last', id); } catch {}
+    renderLibrary();
+    return true;
+  }
+
+  // rec must be a full record (with text); makes it the active book and seeks to its saved spot
+  function activateBook(rec) {
+    savePosition(true); // persist the outgoing book before switching
+    const resumeIdx = resumeIdxFor(rec);
+    book = null; // loadText() pauses, which would otherwise save position 0 over the record
+    loadText(rec.text);
+    book = rec;
+    book.words = tokens.length;
+    if (resumeIdx > 0) seek(Math.min(resumeIdx, tokens.length - 1));
+    book.lastReadAt = Date.now();
+    upsertMeta(book);
+    bookTitle.textContent = rec.title || '';
+    renderLibrary();
+  }
+
+  function renderLibrary() {
+    const list = $('library-list');
+    const books = [...libMeta].sort((a, b) => (b.lastReadAt || 0) - (a.lastReadAt || 0));
+    $('library-card').style.display = books.length ? '' : 'none';
+    list.innerHTML = '';
+    for (const m of books) {
+      const li = document.createElement('li');
+      if (book && m.id === book.id) li.classList.add('active');
+
+      const main = document.createElement('div');
+      main.className = 'lib-main';
+      const t = document.createElement('div');
+      t.className = 'lib-title';
+      t.textContent = m.title || 'Untitled';
+      const total = m.words || 1;
+      const savedIdx = posMap[m.id] && (posMap[m.id].t || 0) >= (m.lastReadAt || 0) ? posMap[m.id].idx : m.idx;
+      const pct = Math.min(100, Math.round(((savedIdx + 1) / total) * 100));
+      const meta = document.createElement('div');
+      meta.className = 'lib-meta';
+      meta.textContent = `${total.toLocaleString()} words · ${pct}% read · ${new Date(m.lastReadAt || m.addedAt).toLocaleDateString()}`;
+      main.append(t, meta);
+
+      const bar = document.createElement('div');
+      bar.className = 'lib-bar';
+      const fill = document.createElement('div');
+      fill.style.width = pct + '%';
+      bar.appendChild(fill);
+
+      const del = document.createElement('button');
+      del.className = 'lib-del';
+      del.textContent = '✕';
+      del.title = 'Remove from library';
+      del.addEventListener('click', async e => {
+        e.stopPropagation();
+        newLoad(); // cancel any in-flight load/restore
+        if (book && book.id === m.id) {
+          // detach BEFORE the async delete so no in-flight save resurrects the record
+          book = null;
+          if (pendingDbSave) { clearTimeout(pendingDbSave); pendingDbSave = null; }
+          pause();
+          tokens = []; weights = []; cumWeight = []; sentenceStarts = [];
+          totalWeight = 0; idx = 0; finished = false;
+          progress.value = 0; progress.max = 0; progress.disabled = true;
+          [btnPlay, btnRestart, btnBack, btnFwd].forEach(b => b.disabled = true);
+          bookTitle.textContent = '';
+          contextHint.textContent = '';
+          showIdle('Removed — drop a file or pick another book');
+          updateStats();
+          try { localStorage.removeItem('swiftread:last'); } catch {}
+        }
+        delete posMap[m.id];
+        writePosMap();
+        libMeta = libMeta.filter(x => x.id !== m.id);
+        renderLibrary();
+        await dbDelete(m.id).catch(() => {});
+      });
+
+      li.addEventListener('click', async () => {
+        if (book && m.id === book.id) return;
+        const gen = newLoad();
+        const rec = await dbGet(m.id).catch(() => null);
+        if (!rec || !loadCurrent(gen)) return;
+        activateBook(rec);
+        try { localStorage.setItem('swiftread:last', rec.id); } catch {}
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+
+      li.append(main, bar, del);
+      list.appendChild(li);
+    }
+  }
+
+  // ----- file ingestion -----
+  async function extractPdf(buf, onProgress) {
+    if (!window.pdfjsLib) throw new Error('PDF library failed to load');
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    try {
+      const pages = [];
+      for (let p = 1; p <= pdf.numPages; p++) {
+        onProgress?.(p, pdf.numPages);
+        const page = await pdf.getPage(p);
+        const tc = await page.getTextContent();
+        // group items into visual lines by Y position; hasEOL alone marks line
+        // breaks but never paragraph gaps, so geometry is the primary signal
+        const lines = [];
+        let cur = '', lastY = null;
+        for (const item of tc.items) {
+          const y = item.transform ? item.transform[5] : lastY;
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 2) {
+            lines.push({ text: cur, y: lastY });
+            cur = '';
+          }
+          if (item.str) cur += item.str;
+          lastY = y;
+        }
+        if (cur.trim() !== '' || lines.length === 0) lines.push({ text: cur, y: lastY });
+        const gaps = [];
+        for (let i = 1; i < lines.length; i++) gaps.push(Math.abs(lines[i - 1].y - lines[i].y));
+        const sortedGaps = [...gaps].sort((a, b) => a - b);
+        const median = sortedGaps[Math.floor(sortedGaps.length / 2)] || 0;
+        // a line gap noticeably larger than the page's median is a paragraph break
+        let text = lines.length ? lines[0].text : '';
+        for (let i = 1; i < lines.length; i++) {
+          const gap = Math.abs(lines[i - 1].y - lines[i].y);
+          text += (median && gap > median * 1.6 ? '\n\n' : '\n') + lines[i].text;
+        }
+        pages.push(text.replace(/[ \t]+\n/g, '\n').trim());
+        page.cleanup();
+      }
+      // join pages with a plain line break so paragraphs (and hyphenated words)
+      // can continue across page boundaries
+      let doc = pages.filter(Boolean).join('\n');
+      // re-join words hyphenated across line/page breaks: lowercase continuation
+      // means it was one word; otherwise keep the hyphen (compound like Anti-Pattern)
+      doc = doc
+        .replace(/([A-Za-zÀ-ÖØ-öø-ÿ])-\s*\n\s*(?=[a-zà-öø-ÿ])/g, '$1')
+        .replace(/([A-Za-zÀ-ÖØ-öø-ÿ])-\s*\n\s*(?=[A-Za-zÀ-ÖØ-öø-ÿ])/g, '$1-');
+      // remaining single newlines are layout line breaks; blank lines split paragraphs
+      return doc
+        .split(/\n\s*\n/)
+        .map(par => par.replace(/\s*\n\s*/g, ' ').trim())
+        .filter(Boolean)
+        .join('\n\n');
+    } finally {
+      pdf.destroy();
+    }
+  }
+
+  async function extractDocx(buf) {
+    if (!window.mammoth) throw new Error('Word library failed to load');
+    const result = await mammoth.extractRawText({ arrayBuffer: buf });
+    return result.value;
+  }
+
+  async function ingestFile(file) {
+    const gen = newLoad();
+    const stale = () => !loadCurrent(gen);
+    pause(); // stop the word ticker so progress/error messages stay visible
+    const ext = (file.name.match(/\.([^.]+)$/)?.[1] || '').toLowerCase();
+    const title = file.name.replace(/\.[^.]+$/, '');
+    showIdle(`Reading ${file.name}…`);
+    try {
+      let text;
+      if (ext === 'pdf' || file.type === 'application/pdf') {
+        const buf = await file.arrayBuffer();
+        if (stale()) return;
+        text = await extractPdf(buf, (p, n) => { if (!stale()) showIdle(`Extracting PDF — page ${p} of ${n}…`); });
+      } else if (ext === 'docx') {
+        const buf = await file.arrayBuffer();
+        if (stale()) return;
+        text = await extractDocx(buf);
+      } else if (ext === 'doc') {
+        throw new Error('Legacy .doc isn’t supported — save it as .docx or PDF first');
+      } else if (['txt', 'md', 'markdown', 'text'].includes(ext) || file.type.startsWith('text/')) {
+        text = await file.text();
+      } else {
+        throw new Error(`Can’t read .${ext || '?'} files — use PDF, DOCX, TXT, or MD`);
+      }
+      if (stale()) return;
+      if (!text || !text.trim()) throw new Error('No readable text found in that file (is it a scanned PDF?)');
+      await addOrResumeText(title, text, gen);
+    } catch (err) {
+      if (!stale()) showIdle(err && err.message ? err.message : 'Could not read that file');
+    }
+  }
+
+  // ----- rendering -----
+  function renderWord() {
+    const t = tokens[idx];
+    const chars = Array.from(t.w); // code points, so emoji/surrogates never split
+    const orp = orpIndex(chars.length);
+    wordLine.classList.remove('idle');
+    wordLine.innerHTML = '';
+    let prefixLen = 0;
+    if (contextMode) {
+      const beforeTxt = tokens.slice(Math.max(0, idx - CTX_WORDS), idx).map(x => x.w).join(' ');
+      if (beforeTxt) {
+        const pre = document.createElement('span');
+        pre.className = 'ctx';
+        pre.textContent = beforeTxt + ' ';
+        wordLine.appendChild(pre);
+        prefixLen = Array.from(beforeTxt).length + 1;
+      }
+    }
+    const before = document.createElement('span');
+    const focus = document.createElement('span');
+    const after = document.createElement('span');
+    before.textContent = chars.slice(0, orp).join('');
+    focus.textContent = chars[orp];
+    focus.className = 'focus';
+    after.textContent = chars.slice(orp + 1).join('');
+    wordLine.append(before, focus, after);
+    if (contextMode) {
+      const afterTxt = tokens.slice(idx + 1, idx + 1 + CTX_WORDS).map(x => x.w).join(' ');
+      if (afterTxt) {
+        const post = document.createElement('span');
+        post.className = 'ctx';
+        post.textContent = ' ' + afterTxt;
+        wordLine.appendChild(post);
+      }
+    }
+    applyWordScale(orp, chars.length);
+    // monospace font: shift so the pivot character sits on the guide line,
+    // counting any context prefix that precedes it
+    wordLine.style.transform = `translateX(calc(-${prefixLen + orp}ch - 0.5ch))`;
+    if (!scrubbing) progress.value = idx;
+    updateStats();
+  }
+
+  // in focus mode, size each word as large as fits its longer half around the pivot
+  function applyWordScale(orp, len) {
+    if (!focusMode) { wordLine.style.fontSize = ''; return; }
+    if (contextMode) {
+      // a whole line is visible — scale with the window instead of the word
+      wordLine.style.fontSize = Math.round(Math.min(110, Math.max(32, window.innerWidth * 0.05))) + 'px';
+      return;
+    }
+    const half = Math.max(orp + 1, len - orp);
+    const cap = Math.min(window.innerHeight * 0.30, 230);
+    const size = Math.min(cap, (window.innerWidth * 0.44) / (0.62 * Math.max(half, 2)));
+    wordLine.style.fontSize = Math.max(28, Math.floor(size)) + 'px';
+  }
+
+  function showIdle(msg) {
+    wordLine.classList.add('idle');
+    wordLine.textContent = msg;
+    wordLine.style.fontSize = '';
+    wordLine.style.transform = 'translateX(-50%)';
+  }
+
+  function fmtTime(ms) {
+    const s = Math.round(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  }
+
+  function updateStats() {
+    if (!tokens.length) { stats.textContent = 'no text loaded'; return; }
+    const remaining = (totalWeight - (idx > 0 ? cumWeight[idx - 1] : 0)) * (60000 / wpm);
+    stats.textContent =
+      `word ${(idx + 1).toLocaleString()} / ${tokens.length.toLocaleString()} · ${fmtTime(remaining)} left`;
+  }
+
+  // ----- playback -----
+  let tickStartedAt = 0, tickDelay = 0;
+  function scheduleAdvance(delay) {
+    tickStartedAt = Date.now();
+    tickDelay = delay;
+    timer = setTimeout(advance, delay);
+  }
+  function advance() {
+    if (idx + 1 >= tokens.length) {
+      finished = true;
+      pause();
+      showIdle('Done — press Space, R, or ⟲ to read again');
+      contextHint.textContent = '';
+      return;
+    }
+    idx++;
+    tick();
+  }
+  function tick() {
+    renderWord();
+    savePosition();
+    scheduleAdvance((60000 / wpm) * weights[idx]);
+  }
+
+  function play() {
+    if (!tokens.length || playing) return;
+    if (finished || idx >= tokens.length) { idx = 0; finished = false; }
+    playing = true;
+    btnPlay.textContent = 'Pause';
+    contextHint.textContent = '';
+    tick();
+  }
+
+  function pause() {
+    playing = false;
+    clearTimeout(timer);
+    btnPlay.textContent = 'Play';
+    if (tokens.length) showContext();
+    savePosition(true);
+  }
+
+  function showContext() {
+    // when paused, show a few surrounding words so the reader can re-orient
+    const from = Math.max(0, idx - 4), to = Math.min(tokens.length, idx + 5);
+    contextHint.textContent = '… ' + tokens.slice(from, to).map(t => t.w).join(' ') + ' …';
+  }
+
+  function seek(i) {
+    idx = Math.max(0, Math.min(tokens.length - 1, i));
+    finished = false;
+    renderWord();
+    if (!playing) showContext();
+    savePosition();
+  }
+
+  function jumpSentence(dir) {
+    if (!tokens.length) return;
+    const wasPlaying = playing;
+    pause();
+    let target;
+    if (dir > 0) {
+      target = sentenceStarts.find(s => s > idx);
+      if (target === undefined) target = tokens.length - 1;
+    } else {
+      // back: start of current sentence, or previous one if already near its start
+      const starts = sentenceStarts.filter(s => s <= idx);
+      target = starts[starts.length - 1] ?? 0;
+      if (idx - target < 2 && starts.length > 1) target = starts[starts.length - 2];
+    }
+    seek(target);
+    if (wasPlaying) play();
+  }
+
+  // ----- context mode -----
+  function setContextMode(on) {
+    contextMode = on;
+    document.body.classList.toggle('context-mode', on);
+    $('btn-context').classList.toggle('on', on);
+    try { localStorage.setItem('swiftread:context', on ? '1' : '0'); } catch {}
+    if (tokens.length && !wordLine.classList.contains('idle')) renderWord();
+  }
+  $('btn-context').addEventListener('click', () => setContextMode(!contextMode));
+
+  // ----- focus mode -----
+  function setFocusMode(on) {
+    focusMode = on;
+    document.body.classList.toggle('focus-mode', on);
+    btnFocus.textContent = on ? '✕' : '⛶';
+    btnFocus.title = on ? 'Exit focus mode (Esc)' : 'Focus mode (F)';
+    if (on) {
+      try { document.documentElement.requestFullscreen?.()?.catch?.(() => {}); } catch {}
+    } else if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    }
+    if (tokens.length && !wordLine.classList.contains('idle')) renderWord();
+  }
+  btnFocus.addEventListener('click', () => setFocusMode(!focusMode));
+  document.addEventListener('fullscreenchange', () => {
+    // browser fullscreen exited (e.g. via Esc) — drop focus mode too
+    if (!document.fullscreenElement && focusMode) setFocusMode(false);
+  });
+  window.addEventListener('resize', () => {
+    if (focusMode && tokens.length && !wordLine.classList.contains('idle')) renderWord();
+  });
+
+  // ----- wiring -----
+  btnPlay.addEventListener('click', () => playing ? pause() : play());
+  btnRestart.addEventListener('click', () => { pause(); seek(0); });
+  btnBack.addEventListener('click', () => jumpSentence(-1));
+  btnFwd.addEventListener('click', () => jumpSentence(1));
+
+  // touch/mouse on the reader: tap = play/pause, horizontal swipe = jump a sentence
+  const displayWrap = $('display-wrap');
+  let ptId = null, ptX = 0, ptY = 0, ptT = 0;
+  displayWrap.addEventListener('pointerdown', e => {
+    ptId = e.pointerId; ptX = e.clientX; ptY = e.clientY; ptT = Date.now();
+  });
+  displayWrap.addEventListener('pointerup', e => {
+    if (e.pointerId !== ptId || !tokens.length) { ptId = null; return; }
+    ptId = null;
+    const dx = e.clientX - ptX, dy = e.clientY - ptY, dt = Date.now() - ptT;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      jumpSentence(dx < 0 ? 1 : -1);          // swipe left → forward, right → back
+    } else if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && dt < 500) {
+      playing ? pause() : play();              // tap → toggle
+    }
+  });
+  displayWrap.addEventListener('pointercancel', () => { ptId = null; });
+
+  // scrub: pause once at drag start, follow the thumb, resume only on release
+  progress.addEventListener('input', () => {
+    if (playing) { scrubResume = true; pause(); }
+    scrubbing = true;
+    seek(Number(progress.value));
+  });
+  progress.addEventListener('change', () => {
+    scrubbing = false;
+    if (scrubResume) { scrubResume = false; play(); }
+  });
+  progress.addEventListener('blur', () => { scrubbing = false; });
+
+  function setWpm(v) {
+    const old = wpm;
+    wpm = Math.max(100, Math.min(1000, v));
+    wpmSlider.value = wpm;
+    wpmValue.textContent = `${wpm} wpm`;
+    updateStats();
+    try { localStorage.setItem('swiftread:wpm', String(wpm)); } catch {}
+    if (playing && wpm !== old) {
+      // re-time the in-flight word so speed changes feel immediate
+      clearTimeout(timer);
+      const elapsed = Date.now() - tickStartedAt;
+      const fracLeft = tickDelay > 0 ? Math.max(0, 1 - elapsed / tickDelay) : 0;
+      scheduleAdvance((60000 / wpm) * weights[idx] * fracLeft);
+    }
+  }
+  wpmSlider.addEventListener('input', () => setWpm(Number(wpmSlider.value)));
+
+  $('btn-load').addEventListener('click', async () => {
+    if (await addOrResumeText(titleFromText(textInput.value), textInput.value)) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  });
+
+  $('btn-paste').addEventListener('click', async () => {
+    let txt = '';
+    try { txt = await navigator.clipboard.readText(); }
+    catch {
+      pause();
+      showIdle('Clipboard is blocked here — click the text box and press ⌘V, or drop a file');
+      textInput.focus();
+      return;
+    }
+    if (!txt.trim()) { pause(); showIdle('Clipboard is empty'); return; }
+    textInput.value = txt;
+    await addOrResumeText(titleFromText(txt), txt);
+  });
+
+  $('btn-file').addEventListener('click', () => $('file-input').click());
+  $('file-input').addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    if (file) ingestFile(file);
+    e.target.value = '';
+  });
+
+  $('btn-sample').addEventListener('click', async () => {
+    textInput.value = SAMPLE;
+    await addOrResumeText('Sample — how RSVP works', SAMPLE);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // paste anywhere on the page (outside the textarea) loads the text directly
+  document.addEventListener('paste', e => {
+    if (e.target === textInput) return;
+    const txt = e.clipboardData?.getData('text/plain');
+    if (txt && txt.trim()) {
+      e.preventDefault();
+      textInput.value = txt;
+      addOrResumeText(titleFromText(txt), txt);
+    }
+  });
+
+  // drag & drop file(s) (or selected text) anywhere on the page
+  let dragDepth = 0;
+  document.addEventListener('dragover', e => e.preventDefault());
+  document.addEventListener('dragenter', e => {
+    e.preventDefault();
+    dragDepth++;
+    // only advertise the page-level drop for files; text drags keep native behavior
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+      dropOverlay.classList.add('show');
+    }
+  });
+  document.addEventListener('dragleave', () => {
+    if (--dragDepth <= 0) { dragDepth = 0; dropOverlay.classList.remove('show'); }
+  });
+  document.addEventListener('drop', e => {
+    const files = e.dataTransfer ? Array.from(e.dataTransfer.files || []) : [];
+    if (e.target === textInput && !files.length) {
+      // text dropped on the textarea: let the browser insert it natively
+      dragDepth = 0;
+      dropOverlay.classList.remove('show');
+      return;
+    }
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove('show');
+    if (files.length) {
+      (async () => { for (const f of files) await ingestFile(f); })();
+      return;
+    }
+    const txt = e.dataTransfer?.getData('text/plain');
+    if (txt && txt.trim()) { textInput.value = txt; addOrResumeText(titleFromText(txt), txt); }
+  });
+
+  document.addEventListener('keydown', e => {
+    const t = e.target instanceof Element ? e.target : null;
+    if (t === textInput) return;
+    // let form controls keep their native keyboard behavior
+    if (t && t.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (t && t.closest('button') && (e.code === 'Space' || e.code === 'Enter')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    switch (e.code) {
+      case 'Space': e.preventDefault(); playing ? pause() : play(); break;
+      case 'ArrowLeft': e.preventDefault(); jumpSentence(-1); break;
+      case 'ArrowRight': e.preventDefault(); jumpSentence(1); break;
+      case 'ArrowUp': e.preventDefault(); setWpm(wpm + 25); break;
+      case 'ArrowDown': e.preventDefault(); setWpm(wpm - 25); break;
+      case 'KeyC': setContextMode(!contextMode); break;
+      case 'KeyF': setFocusMode(!focusMode); break;
+      case 'Escape': if (focusMode) setFocusMode(false); break;
+      case 'KeyR': if (tokens.length) { pause(); seek(0); } break;
+    }
+  });
+
+  // when the tab is hidden, stop the ticker (hidden-tab timers are throttled to ~1/s
+  // anyway, so words would crawl by unseen) and save the spot; same on close
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      if (playing) pause();
+      else savePosition(true);
+    }
+  });
+  window.addEventListener('beforeunload', () => savePosition(true));
+  window.addEventListener('pagehide', () => savePosition(true));
+
+  // ----- startup: restore speed, library, and last book -----
+  (async () => {
+    try {
+      const savedWpm = Number(localStorage.getItem('swiftread:wpm'));
+      if (savedWpm) setWpm(savedWpm);
+    } catch {}
+    try {
+      const savedCtx = localStorage.getItem('swiftread:context');
+      setContextMode(savedCtx === null ? true : savedCtx === '1');
+    } catch { setContextMode(true); }
+    const gen = newLoad(); // any user action during startup supersedes the auto-restore
+    try { libMeta = await dbAllMeta(); } catch { libMeta = []; }
+    renderLibrary();
+    let lastId = null;
+    try { lastId = localStorage.getItem('swiftread:last'); } catch {}
+    if (!lastId) return;
+    const rec = await dbGet(lastId).catch(() => null);
+    if (rec && loadCurrent(gen) && !book) activateBook(rec);
+  })();
+
+  // small console/test API
+  window.swiftread = {
+    get state() {
+      return { idx, wpm, playing, finished, focusMode, contextMode, words: tokens.length, bookId: book && book.id, title: book && book.title };
+    },
+    addOrResumeText, ingestFile, extractPdf, extractDocx,
+    seek, play, pause, savePosition, setFocusMode, setContextMode,
+    db: { get: dbGet, allMeta: dbAllMeta, delete: dbDelete },
+  };
+
+  // register the service worker so the app loads instantly and works fully offline
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  }
+})();
+</script>
+</body>
+</html>
